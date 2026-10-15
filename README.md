@@ -123,8 +123,11 @@ A typical AI run:
 5. Check it with `preview_frames`.
 6. `export_video`.
 
-**While an AI edits, don't edit the same project in the browser.** The editor saves its own copy and
-would overwrite the AI's changes. Reload the editor page afterwards to see them.
+**Watch it live:** keep the project open in the YABBE editor while the AI works. Its changes appear
+as they're made (the header shows "AI editing…"), and you can keep editing too: edits made at the same
+moment are merged, not overwritten. The AI re-applies its change on top of yours, and the editor merges
+yours on top of the AI's. Ctrl+Z in the editor undoes the AI's last change. This needs a YABBE from
+October 2026 or later; older versions don't have live sync.
 
 ## Settings
 

@@ -20,7 +20,7 @@ from mcp.server.mcpserver.exceptions import ToolError
 from mcp_types import ToolAnnotations
 
 from . import analysis, presets
-from .client import Yabbe, YabbeError
+from .client import Conflict, Yabbe, YabbeError
 from .timeline import Edit, EditError, end, new_clip, uid
 
 INSTRUCTIONS = """\
@@ -46,9 +46,9 @@ Times are seconds. Timeline time = position in the sequence; a clip shows
 its source at in_point + (t - start) * speed. Tracks are listed top layer first;
 video tracks hold pictures, audio tracks sound. Positions (x, y) are pixels
 from the canvas centre; scale 1 = fit inside the canvas. Every edit can be
-reverted with undo. If the user has the project open in the YABBE editor,
-tell them to reload the page to see your changes (and not to edit there at the
-same time - the editor would save over them).
+reverted with undo. The user can watch your edits live in the YABBE editor
+(and edit alongside you: concurrent edits are merged), so suggest they open
+the project there.
 """
 
 mcp = MCPServer(
@@ -119,22 +119,26 @@ async def _load(project_id: Optional[str], sequence_id: Optional[str] = None) ->
     return Edit(p, sequence_id or _current["sequence"].get(pid))
 
 
-async def _save(e: Edit, before: dict) -> None:
-    stack = _undo.setdefault(e.project["id"], [])
-    stack.append({"sequences": before["sequences"], "main_sequence_id": before["main_sequence_id"]})
-    del stack[:-UNDO_DEPTH]
-    saved = await api().save_sequences(e.project)
-    _current["sequence"][e.project["id"]] = e.sequence_id
-    e.project = saved
-
-
 async def _edit(project_id: Optional[str], fn, sequence_id: Optional[str] = None):
-    """Load → change → save (with an undo snapshot). Returns (fn's result, edit)."""
-    e = await _load(project_id, sequence_id)
-    before = copy.deepcopy(e.project)
-    result = fn(e)
-    await _save(e, before)
-    return result, e
+    """Load → change → save, with an undo snapshot. The save only goes through if
+    nobody else (e.g. the user in the YABBE editor) saved in between; if they
+    did, the change is made again on top of theirs. Returns (fn's result, edit)."""
+    for attempt in range(5):
+        e = await _load(project_id, sequence_id)
+        before = copy.deepcopy(e.project)
+        result = fn(e)
+        try:
+            saved = await api().save_sequences(e.project, base_rev=before.get("rev", 0))
+        except Conflict:
+            await asyncio.sleep(0.2 * (attempt + 1))
+            continue
+        stack = _undo.setdefault(e.project["id"], [])
+        stack.append({"sequences": before["sequences"], "main_sequence_id": before["main_sequence_id"]})
+        del stack[:-UNDO_DEPTH]
+        _current["sequence"][e.project["id"]] = e.sequence_id
+        e.project = saved
+        return result, e
+    raise EditError("The project kept changing while saving (someone is editing it right now); try again")
 
 
 def _src_time(c: dict, at: Optional[float]) -> float:

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import mimetypes
 import os
+import uuid
 from pathlib import Path
 from typing import Any, AsyncIterator, Awaitable, Callable, Optional
 from urllib.parse import quote
@@ -18,10 +19,15 @@ class YabbeError(Exception):
     pass
 
 
+class Conflict(YabbeError):
+    """The project changed since it was loaded (someone else saved)."""
+
+
 class Yabbe:
     def __init__(self, base_url: str, timeout: float = 120.0):
         self.base = base_url.rstrip("/")
-        headers = {"User-Agent": "yabbe-mcp"}
+        # Named in YABBE's change stream, so an open editor shows "AI editing…"
+        headers = {"User-Agent": "yabbe-mcp", "X-Yabbe-Client": f"mcp-{uuid.uuid4().hex[:8]}"}
         token = os.environ.get("YABBE_TOKEN")  # for a YABBE behind an auth proxy
         if token:
             headers["Authorization"] = f"Bearer {token}"
@@ -38,6 +44,8 @@ class Yabbe:
                     detail = "; ".join(d.get("msg", str(d)) for d in detail)
             except Exception:  # noqa: BLE001
                 detail = r.text[:300]
+            if r.status_code == 409:
+                raise Conflict(str(detail))
             raise YabbeError(f"YABBE said {r.status_code}: {detail}")
         return r
 
@@ -68,9 +76,12 @@ class Yabbe:
     async def project(self, pid: str) -> dict:
         return await self.get(f"/api/projects/{quote(pid)}")
 
-    async def save_sequences(self, project: dict) -> dict:
-        return await self.put(f"/api/projects/{quote(project['id'])}",
-                              {"sequences": project["sequences"], "main_sequence_id": project["main_sequence_id"]})
+    async def save_sequences(self, project: dict, base_rev: Optional[int] = None) -> dict:
+        """Save the timeline; with ``base_rev`` only if nobody saved since (else Conflict)."""
+        body = {"sequences": project["sequences"], "main_sequence_id": project["main_sequence_id"]}
+        if base_rev is not None:
+            body["base_rev"] = base_rev
+        return await self.put(f"/api/projects/{quote(project['id'])}", body)
 
     # -- media -------------------------------------------------------------------------------------
 
